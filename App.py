@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import ta
+import pandas_ta as ta
 import plotly.graph_objs as go
+import numpy as np
 
 # Set page configuration and title
 st.set_page_config(page_title="Advanced Trading Strategy Analyzer")
@@ -31,7 +32,7 @@ if submit_button:
     if ticker_input.isdigit():
         ticker = f"{ticker_input}.SR"
     else:
-        ticker = ticker_input
+        ticker = ticker_input.upper()
 
     # Download the data for the ticker
     try:
@@ -41,17 +42,27 @@ if submit_button:
         if df.empty:
             st.error("No data found for the given ticker and period.")
         else:
-            # Calculate indicators
-            df['SMA_Short'] = df['Close'].rolling(window=sma_short).mean()
-            df['SMA_Long'] = df['Close'].rolling(window=sma_long).mean()
-            df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
-            df['MACD'] = ta.trend.MACD(df['Close']).macd()
-            df['MACD_Signal'] = ta.trend.MACD(df['Close']).macd_signal()
-            df['ADL'] = ta.volume.AccDistIndexIndicator(
-                df['High'], df['Low'], df['Close'], df['Volume']
-            ).acc_dist_index()
-            df['ADL_Short_SMA'] = df['ADL'].rolling(window=adl_short).mean()
-            df['ADL_Long_SMA'] = df['ADL'].rolling(window=adl_long).mean()
+            # Calculate indicators using pandas-ta
+            df['SMA_Short'] = ta.sma(df['Close'], length=sma_short)
+            df['SMA_Long'] = ta.sma(df['Close'], length=sma_long)
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+            macd = ta.macd(df['Close'])
+            df['MACD'] = macd['MACD_12_26_9']
+            df['MACD_Signal'] = macd['MACDs_12_26_9']
+            df['ADL'] = ta.ad(df['High'], df['Low'], df['Close'], df['Volume'])
+            df['ADL_Short_SMA'] = ta.sma(df['ADL'], length=adl_short)
+            df['ADL_Long_SMA'] = ta.sma(df['ADL'], length=adl_long)
+
+            # Ensure all outputs are 1D Series
+            indicator_columns = ['SMA_Short', 'SMA_Long', 'RSI', 'MACD', 'MACD_Signal', 'ADL', 'ADL_Short_SMA', 'ADL_Long_SMA']
+            for col in indicator_columns:
+                if isinstance(df[col], pd.DataFrame):
+                    df[col] = df[col].iloc[:, 0]
+                else:
+                    df[col] = df[col].squeeze()
+
+            # Drop rows with NaN values
+            df.dropna(inplace=True)
 
             # Signal generation
             df['Signal'] = df.apply(
@@ -106,9 +117,9 @@ if submit_button:
             buy_signals = df[df['Signal'] == 1]
             sell_signals = df[df['Signal'] == -1]
 
-            fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['Close'], mode='markers', name='Buy Signal', 
+            fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['Close'], mode='markers', name='Buy Signal',
                                      marker=dict(color='green', size=12, symbol='triangle-up')))
-            fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['Close'], mode='markers', name='Sell Signal', 
+            fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['Close'], mode='markers', name='Sell Signal',
                                      marker=dict(color='red', size=12, symbol='triangle-down')))
 
             fig.update_layout(title=f'Trading Strategy for {ticker}', xaxis_title='Date', yaxis_title='Price', template='plotly_white')
@@ -117,19 +128,21 @@ if submit_button:
             st.plotly_chart(fig)
 
             # Prepare the summary text
+            average_days_held = sum([t['Days Held'] for t in trades]) / number_of_trades if number_of_trades > 0 else 0
+
             summary_text = (
-                f"Ticker: {ticker}\n"
-                f"Initial Investment: {initial_investment:,.2f} SAR\n"
-                f"Final Portfolio Value: {final_value:,.2f} SAR\n"
-                f"Total Return: {total_return:,.2f} SAR\n"
-                f"Percentage Return: {percentage_return:.2f}%\n"
-                f"Number of Trades: {number_of_trades}\n"
-                f"Average Days Held per Trade: {sum([t['Days Held'] for t in trades]) / number_of_trades if number_of_trades > 0 else 0:.2f} days"
+                f"**Ticker:** {ticker}\n"
+                f"**Initial Investment:** {initial_investment:,.2f} SAR\n"
+                f"**Final Portfolio Value:** {final_value:,.2f} SAR\n"
+                f"**Total Return:** {total_return:,.2f} SAR\n"
+                f"**Percentage Return:** {percentage_return:.2f}%\n"
+                f"**Number of Trades:** {number_of_trades}\n"
+                f"**Average Days Held per Trade:** {average_days_held:.2f} days"
             )
 
             # Display the summary
             st.header("Best Strategy Summary")
-            st.text(summary_text)
+            st.markdown(summary_text)
 
             # Create the trades table
             trades_df = pd.DataFrame(trades)
